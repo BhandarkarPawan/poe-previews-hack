@@ -18,13 +18,7 @@ import re
 import requirements
 
 SYSTEM_PROMPT = """
-You are an AI assistant that helps humans create design systems. The human will typically provide you a URL that they would like to extract the design system from. The general flow will be :
-
-1. Extract the url from the user's input
-2. Get the complete HTML and CSS from the url 
-
-You have access to functions for each step. Use them in order to get the job done.
-return the whole html and css for now
+You are an AI assistant specialising in frontend design that knows about and conforms to the best practices of UI/UX. 
 """.strip()
 
 # EXTRACT_DESIGN_TOKENS_PROMPT = """
@@ -34,12 +28,12 @@ return the whole html and css for now
 # """
 
 EXTRACT_DESIGN_TOKENS_PROMPT = """
-From the above html and css, give me a set of design tokens
+From the above html and css, extract a comprehensive a set of tokens, like what are the colors used (primary, secondary, background, etc.), typography (heading, body, etc.), spacing (padding, margin, etc.) as well as other things like the grid system, borders, shadows, etc. Basically anything that would help a frontend developer implement new components that are consistent with the design system.
 """
 
 
 GENERATE_DESIGN_SYSTEM_PROMPT = """
-Design a component system based on the above design tokens, start with a button, a card and a sign up form. give me the whole html with the components rendered. Keep the components consistent with the design system!
+Design a complete component system using HTML and CSS based on the above design tokens. For now let's start with a button, a sign up form, a list and a card. Keep the components consistent with the design system! Ouput an html file with all components rendered. 
 """
 
 
@@ -173,7 +167,11 @@ class GPT35FunctionCallingBot(fp.PoeBot):
         yield fp.PartialResponse(text="Generating the design system...", is_replace_response=True)
         design_system_prompt = f"{design_tokens_response}\n\n{GENERATE_DESIGN_SYSTEM_PROMPT}"
         
-        request.query = [fp.ProtocolMessage(role="user", content=design_system_prompt)]
+        request.query = [
+          fp.ProtocolMessage(role="system", content=SYSTEM_PROMPT),
+          fp.ProtocolMessage(role="user", content=design_system_prompt)
+        ]
+        yield fp.PartialResponse(text="", is_replace_response=True)
         async for msg in fp.stream_request(request, "Claude-3-Sonnet-200k", api_key=request.access_key):
             yield msg
 
