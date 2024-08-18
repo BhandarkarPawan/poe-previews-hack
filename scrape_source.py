@@ -1,86 +1,118 @@
-import requests
+import re
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
-import ssl
-import os
+import tinycss2
+import requests
+import cssselect
 
-def get_and_save_source_code(url, output_file):
+def clean_css(css):
+    # Remove comments
+    css = re.sub(r'/\*[\s\S]*?\*/', '', css)
+    # Fix color values
+    css = re.sub(r'#([0-9a-fA-F]{3,4})\b', r'#\1\1', css)
+    return css
+
+def parse_css(css_content):
+    return tinycss2.parse_stylesheet(css_content)
+
+def extract_used_css(html, css_rules):
+    soup = BeautifulSoup(html, 'html.parser')
+    used_css = []
+    
+    for rule in css_rules:
+        if rule.type == 'qualified-rule':
+            try:
+                selector = cssselect.parse(''.join(token.serialize() for token in rule.prelude))
+                print(selector)
+                for sel in selector:
+                    if soup.select(sel.canonical()):
+                        used_css.append(rule)
+                        break
+            except cssselect.SelectorError:
+                # If the selector is invalid, skip it
+                continue
+    
+    return used_css
+
+def serialize_css(css_rules):
+    rules = []
+    for rule in css_rules:
+        try:
+            rules.append(rule.serialize())
+        except Exception as e:
+            print(f'Error serializing rule: {e}')
+    return '\n'.join(rules)
+
+def crawl_and_extract(url):
+    # Set up Selenium WebDriver
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    
     try:
-        # Create a session to reuse the same connection
-        session = requests.Session()
+        # Get the rendered HTML
+        html = driver.page_source
         
-        # Configure session for HTTPS
-        session.verify = True  # Verify SSL certificates
+        # Extract all CSS
+        all_css = ''
         
-        # Send a GET request to the URL
-        response = session.get(url, timeout=10)
-        response.raise_for_status()  # Raise an exception for bad status codes
+        # Inline styles
+        style_elements = WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.TAG_NAME, "style"))
+        )
+        for style in style_elements:
+            all_css += style.get_attribute('textContent')
         
-        # Get the HTML content
-        html_content = response.text
+        # External stylesheets
+        link_elements = WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.TAG_NAME, "link"))
+        )
+        for link in link_elements:
+            if link.get_attribute('rel') == 'stylesheet':
+                css_url = link.get_attribute('href')
+                if css_url:
+                    try:
+                        response = requests.get(css_url)
+                        all_css += response.text
+                    except requests.RequestException:
+                        print(f"Failed to fetch CSS from {css_url}")
         
-        # Parse the HTML content
-        soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # Extract CSS content
-        css_content = ""
-        
-        # Find all <style> tags and extract their content
-        for style in soup.find_all('style'):
-            css_content += style.string + "\n\n" if style.string else ""
-        
-        # Find all <link> tags with rel="stylesheet" and fetch their content
-        for link in soup.find_all('link', rel='stylesheet'):
-            if 'href' in link.attrs:
-                css_url = urljoin(url, link['href'])
-                try:
-                    css_response = session.get(css_url, timeout=5)
-                    css_response.raise_for_status()
-                    css_content += css_response.text + "\n\n"
-                except requests.exceptions.RequestException as e:
-                    print(f"Failed to fetch CSS from {css_url}: {e}")
-        
-        # Remove existing <link> tags for stylesheets
-        for link in soup.find_all('link', rel='stylesheet'):
-            link.decompose()
-        
-        # Create a new <style> tag with all the CSS content
-        new_style = soup.new_tag('style')
-        new_style.string = css_content
-        
-        # Insert the new <style> tag into the <head>
-        head = soup.find('head')
-        if head:
-            head.append(new_style)
-        else:
-            # If there's no <head>, create one and add it to the beginning of the <html>
-            new_head = soup.new_tag('head')
-            new_head.append(new_style)
-            html = soup.find('html')
-            if html:
-                html.insert(0, new_head)
-            else:
-                # If there's no <html>, something is wrong with the structure
-                raise ValueError("Invalid HTML structure: no <html> tag found")
-        
-        # Write the modified HTML (with inlined CSS) to the output file
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(str(soup))
-        
-        print(f"Successfully saved the webpage to {output_file}")
-        
-    except requests.exceptions.RequestException as e:
-        print(f"An error occurred while fetching the URL: {e}")
-    except ssl.SSLError as e:
-        print(f"An SSL error occurred: {e}")
-    except IOError as e:
-        print(f"An error occurred while writing to the file: {e}")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-    finally:
-        session.close()
+        cleaned_css = clean_css(all_css)
 
-# Example usage
-url = "https://sutra.co"
-output_file = "webpage_with_css.html"
-get_and_save_source_code(url, output_file)
+        
+        # Combine HTML and used CSS
+        combined = f"""
+        <html>
+        <head>
+        <style>
+        {cleaned_css}
+        </style>
+        </head>
+        <body>
+        {html}
+        </body>
+        </html>
+        """
+        
+        # Save to file
+        with open('output.html', 'w', encoding='utf-8') as f:
+            f.write(combined)
+        
+        print("Crawling and extraction completed successfully!")
+        return combined    
+    
+    except TimeoutException:
+        print("Timed out waiting for page to load")
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+    finally:
+        driver.quit()
+
