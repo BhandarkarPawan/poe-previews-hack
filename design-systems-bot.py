@@ -28,16 +28,13 @@ You are an AI assistant specialising in frontend design that knows about and con
 # """
 
 EXTRACT_DESIGN_TOKENS_PROMPT = """
-From the above html and css, extract a comprehensive a set of tokens, like what are the colors used (primary, secondary, background, etc.), typography (heading, body, etc.), spacing (padding, margin, etc.) as well as other things like the grid system, borders, shadows, etc. Basically anything that would help a frontend developer implement new components that are consistent with the design system.
+From the above html and css, extract a comprehensive a set of tokens, like what are the colors used (primary, secondary, background, etc.), typography (heading, body, etc.), spacing (padding, margin, etc.) as well as other things like the grid system, borders, shadows, etc. Basically anything that would help a frontend developer implement new components that are consistent with the design system. Do not say anything at the end after you generate the tokens
 """
 
 
 GENERATE_DESIGN_SYSTEM_PROMPT = """
 Design a complete component system using HTML and CSS based on the above design tokens. For now let's start with a button, a sign up form, a list and a card. Keep the components consistent with the design system! Ouput an html file with all components rendered. 
 """
-
-
-
 
 
 def crawl_and_extract(url):
@@ -148,35 +145,69 @@ tools = [fp.ToolDefinition(**tools_dict) for tools_dict in tools_dict_list]
 def get_design_tokens(html_css):
     prompt = f"{html_css}\n\n{EXTRACT_DESIGN_TOKENS_PROMPT}"
     
+    
+DETERMINE_INTENT_PROMPT = f"""
+You are an AI assistant that determines the intent of the user's input. Based on what the user has said select one fo the following options:
 
+Option 0: The user wants to generate a design system from a url 
+Option 1: The user wants to use a design system to generate pages or other components that conform to the design system. 
+
+Output only the most appropriate option. if the user's input does not match any of the options, output "none".
+""".strip()
+
+
+
+def resolve_intent(intent):
+  if "0" in intent:
+    return 0
+  if "1" in intent:
+    return 1
+  return -1
 
 class GPT35FunctionCallingBot(fp.PoeBot):
     async def get_response(
         self, request: fp.QueryRequest
     ) -> AsyncIterable[fp.PartialResponse]:
+        original_query = request.query
         last_message = request.query[-1].content
-        url = determine_url(last_message)
-        print("Url: ", url)
-        yield fp.PartialResponse(text="Extracting the design tokens...", is_replace_response=True)
-        html_css = crawl_and_extract(url)
-        design_tokens_prompt = f"{html_css}\n\n{EXTRACT_DESIGN_TOKENS_PROMPT}"
-        print("design_tokens_prompt: ", design_tokens_prompt)
-        request.query = [fp.ProtocolMessage(role="user", content=design_tokens_prompt)]     
-        design_tokens_response = await fp.get_final_response(request, "Claude-3-Sonnet-200k", api_key=request.access_key)
-        print("design_tokens_response: ", design_tokens_response)
-        yield fp.PartialResponse(text="Generating the design system...", is_replace_response=True)
-        design_system_prompt = f"{design_tokens_response}\n\n{GENERATE_DESIGN_SYSTEM_PROMPT}"
-        
+        determine_intent_prompt = f"{DETERMINE_INTENT_PROMPT}\n\n{last_message}"
         request.query = [
           fp.ProtocolMessage(role="system", content=SYSTEM_PROMPT),
-          fp.ProtocolMessage(role="user", content=design_system_prompt)
+          fp.ProtocolMessage(role="user", content=determine_intent_prompt)
         ]
-        yield fp.PartialResponse(text="", is_replace_response=True)
-        async for msg in fp.stream_request(request, "Claude-3-Sonnet-200k", api_key=request.access_key):
-            yield msg
-
+        intent_response = await fp.get_final_response(request, "Claude-3-Sonnet-200k", api_key=request.access_key)
+        intent = resolve_intent(intent_response)
+        print("intent determined: ", intent)
+        
+        if intent == 0:
+          url = determine_url(last_message)
+          print("Url: ", url)
+          yield fp.PartialResponse(text="Extracting the design tokens...", is_replace_response=True)
+          html_css = crawl_and_extract(url)
+          design_tokens_prompt = f"{html_css}\n\n{EXTRACT_DESIGN_TOKENS_PROMPT}"
+          print("design_tokens_prompt: ", design_tokens_prompt)
+          request.query = [fp.ProtocolMessage(role="user", content=design_tokens_prompt)]     
+          design_tokens_response = await fp.get_final_response(request, "Claude-3-Sonnet-200k", api_key=request.access_key)
+          print("design_tokens_response: ", design_tokens_response)
+          yield fp.PartialResponse(text="Generating the design system...", is_replace_response=True)
+          design_system_prompt = f"{design_tokens_response}\n\n{GENERATE_DESIGN_SYSTEM_PROMPT}"
+          
+          request.query = [
+            fp.ProtocolMessage(role="system", content=SYSTEM_PROMPT),
+            fp.ProtocolMessage(role="user", content=design_system_prompt)
+          ]
+          yield fp.PartialResponse(text="", is_replace_response=True)
+          async for msg in fp.stream_request(request, "Claude-3-Sonnet-200k", api_key=request.access_key):
+              yield msg
+        else: 
+          request.query = original_query
+          async for msg in fp.stream_request(request, "Claude-3-Sonnet-200k", api_key=request.access_key):
+              yield msg
+              
     async def get_settings(self, setting: fp.SettingsRequest) -> fp.SettingsResponse:
-        return fp.SettingsResponse(server_bot_dependencies={"Claude-3-Sonnet-200k": 1})
+      return fp.SettingsResponse(
+        server_bot_dependencies={"Claude-3-Sonnet-200k": 1, "Claude-3-Haiku": 1}, 
+    )
 
 
 image = Image.debian_slim().pip_install(*requirements.REQUIREMENTS)
@@ -195,7 +226,7 @@ def fastapi_app():
     # by following the instructions at: https://modal.com/docs/guide/secrets
     # POE_ACCESS_KEY = ""
     # app = make_app(bot, access_key=POE_ACCESS_KEY)
-    app = fp.make_app(bot, access_key="rHY317mNkhX2L2a1Ab2mjC8AwZTH9xRt")
+    app = fp.make_app(bot, access_key="kIjGZefz1bJGYonuPRtyb5NH3mFQ6CkP")
     return app
 
 
